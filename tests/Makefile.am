@@ -51,7 +51,8 @@ src_TESTS = \
   overlapping-segments-after-rounding.sh \
   shared-rpath.sh \
   short-first-segment.sh \
-  empty-note.sh
+  empty-note.sh \
+  set-audit.sh
 
 build_TESTS = \
   $(no_rpath_arch_TESTS)
@@ -123,7 +124,7 @@ check_DATA = libbig-dynstr.debug
 # - with libtool, it is difficult to control options
 # - with libtool, it is not possible to compile convenience *dynamic* libraries :-(
 check_PROGRAMS += libfoo.so libfoo-scoped.so libbar.so libbar-scoped.so libsimple.so libsimple-execstack.so libbuildid.so libtoomanystrtab.so \
-                  phdr-corruption.so many-syms-main libmany-syms.so liboveralign.so libshared-rpath.so
+                  phdr-corruption.so many-syms-main libmany-syms.so liboveralign.so libshared-rpath.so libaudit.so
 
 libbuildid_so_SOURCES = simple.c
 libbuildid_so_LDFLAGS = $(LDFLAGS_sharedlib) -Wl,--build-id
@@ -167,6 +168,9 @@ many_syms_main_DEPENDENCIES = libmany-syms.so
 many_syms_main_CFLAGS = -pie
 libmany_syms_so_SOURCES = many-syms.c
 libmany_syms_so_LDFLAGS = $(LDFLAGS_sharedlib)
+
+libaudit_so_SOURCES = audit.c
+libaudit_so_LDFLAGS = $(LDFLAGS_sharedlib)
 
 no_rpath_SOURCES = no-rpath.c
 # no -fpic for no-rpath.o

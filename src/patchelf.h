@@ -155,6 +155,8 @@ public:
     std::string shrinkRPath(char* rpath, std::vector<std::string> &neededLibs, const std::vector<std::string> & allowedRpathPrefixes);
     void removeRPath(Elf_Shdr & shdrDynamic);
 
+    void setAudit(std::string newAudit);
+
     void addNeeded(const std::set<std::string> & libs);
 
     void removeNeeded(const std::set<std::string> & libs);

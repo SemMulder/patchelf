@@ -1703,6 +1703,104 @@ void ElfFile<ElfFileParamNames>::modifyRPath(RPathOp op,
     this->rewriteSections();
 }
 
+template<ElfFileParams>
+void ElfFile<ElfFileParamNames>::setAudit(std::string newAudit)
+{
+    auto shdrDynamic = findSectionHeader(".dynamic");
+
+    if (rdi(shdrDynamic.sh_type) == SHT_NOBITS) {
+            debug("no dynamic section\n");
+            return;
+    }
+
+    /* !!! We assume that the virtual address in the DT_STRTAB entry
+       of the dynamic section corresponds to the .dynstr section. */
+    auto& shdrDynStr = findSectionHeader(".dynstr");
+    char * strTab = (char *) fileContents->data() + rdi(shdrDynStr.sh_offset);
+
+
+    /* Walk through the dynamic section, look for the AUDIT entry. */
+    auto dyn = (Elf_Dyn *)(fileContents->data() + rdi(shdrDynamic.sh_offset));
+    checkPointer(fileContents, dyn, sizeof(*dyn));
+    Elf_Dyn *dynAudit = nullptr;
+    char * audit = nullptr;
+    for ( ; rdi(dyn->d_tag) != DT_NULL; dyn++) {
+        if (rdi(dyn->d_tag) == DT_AUDIT) {
+            dynAudit = dyn;
+            audit = strTab + rdi(dyn->d_un.d_val);
+        }
+    }
+
+    if (audit && audit == newAudit) {
+        return;
+    }
+    changed = true;
+
+    bool auditStrShared = false;
+    size_t auditSize = 0;
+    if (audit) {
+        std::string_view auditView {audit};
+        auditSize = auditView.size();
+
+        size_t auditStrReferences = 0;
+        forAllStringReferences(shdrDynStr, [&] (auto refIdx) {
+            if (auditView.end() == std::string_view(strTab + rdi(refIdx)).end())
+                auditStrReferences++;
+        });
+        assert(auditStrReferences >= 1);
+        debug("Number of audit references: %lu\n", auditStrReferences);
+        auditStrShared = auditStrReferences > 1;
+    }
+
+    /* Zero out the previous audit to prevent retained dependencies in
+       Nix. */
+    if (audit && !auditStrShared) {
+        debug("Tainting old audit with Xs\n");
+        memset(audit, 'X', auditSize);
+    }
+
+    debug("new audit is '%s'\n", newAudit.c_str());
+
+
+    if (!auditStrShared && newAudit.size() <= auditSize) {
+        if (audit) memcpy(audit, newAudit.c_str(), newAudit.size() + 1);
+        return;
+    }
+
+    /* Grow the .dynstr section to make room for the new AUDIT. */
+    debug("audit is too long or shared, resizing...\n");
+
+    std::string & newDynStr = replaceSection(".dynstr",
+        rdi(shdrDynStr.sh_size) + newAudit.size() + 1);
+    setSubstr(newDynStr, rdi(shdrDynStr.sh_size), newAudit + '\0');
+
+    /* Update the DT_AUDIT entries. */
+    if (dynAudit) {
+        dynAudit->d_un.d_val = shdrDynStr.sh_size;
+    }
+
+    else {
+        /* There is no DT_AUDIT entry in the .dynamic section, so we
+           have to grow the .dynamic section. */
+        std::string & newDynamic = replaceSection(".dynamic",
+            rdi(shdrDynamic.sh_size) + sizeof(Elf_Dyn));
+
+        unsigned int idx = 0;
+        for ( ; rdi(reinterpret_cast<const Elf_Dyn *>(newDynamic.c_str())[idx].d_tag) != DT_NULL; idx++) ;
+        debug("DT_NULL index is %d\n", idx);
+
+        /* Shift all entries down by one. */
+        setSubstr(newDynamic, sizeof(Elf_Dyn),
+            std::string(newDynamic, 0, sizeof(Elf_Dyn) * (idx + 1)));
+
+        /* Add the DT_AUDIT entry at the top. */
+        Elf_Dyn newDyn;
+        wri(newDyn.d_tag, DT_AUDIT);
+        newDyn.d_un.d_val = shdrDynStr.sh_size;
+        setSubstr(newDynamic, 0, std::string((char *) &newDyn, sizeof(Elf_Dyn)));
+    }
+    this->rewriteSections();
+}
 
 template<ElfFileParams>
 void ElfFile<ElfFileParamNames>::removeNeeded(const std::set<std::string> & libs)
@@ -2387,6 +2485,8 @@ static bool noDefaultLib = false;
 static bool printExecstack = false;
 static bool clearExecstack = false;
 static bool setExecstack = false;
+static bool setAudit = false;
+static std::string newAudit;
 
 template<class ElfFile>
 static void patchElf2(ElfFile && elfFile, const FileContents & fileContents, const std::string & fileName)
@@ -2427,6 +2527,9 @@ static void patchElf2(ElfFile && elfFile, const FileContents & fileContents, con
         elfFile.modifyRPath(elfFile.rpSet, {}, newRPath);
     else if (addRPath)
         elfFile.modifyRPath(elfFile.rpAdd, {}, newRPath);
+
+    if (setAudit)
+        elfFile.setAudit(newAudit);
 
     if (printNeeded) elfFile.printNeededLibs();
 
@@ -2509,6 +2612,7 @@ static void showHelp(const std::string & progName)
   [--set-execstack]\n\
   [--rename-dynamic-symbols NAME_MAP_FILE]\tRenames dynamic symbols. The map file should contain two symbols (old_name new_name) per line\n\
   [--no-clobber-old-sections]\t\tDo not clobber old section values - only use when the binary expects to find section info at the old location.\n\
+  [--set-audit AUDIT]\n\
   [--output FILE]\n\
   [--debug]\n\
   [--version]\n\
@@ -2667,6 +2771,11 @@ static int mainWrapped(int argc, char * * argv)
         }
         else if (arg == "--no-clobber-old-sections") {
             clobberOldSections = false;
+        }
+        else if (arg == "--set-audit") {
+            if (++i == argc) error("missing argument");
+            setAudit = true;
+            newAudit = resolveArgument(argv[i]);
         }
         else if (arg == "--help" || arg == "-h" ) {
             showHelp(argv[0]);
